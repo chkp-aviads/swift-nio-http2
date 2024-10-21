@@ -704,7 +704,7 @@ extension HTTP2ConnectionStateMachine {
             return .init(result: .connectionError(underlyingError: NIOHTTP2Errors.missingPreface(), type: .protocolError), effect: nil)
 
         case .fullyQuiesced:
-            return .init(result: .connectionError(underlyingError: NIOHTTP2Errors.ioOnClosedConnection(), type: .protocolError), effect: nil)
+            return .init(result: .streamError(streamID: streamID, underlyingError: NIOHTTP2Errors.streamError(streamID: streamID, baseError: NIOHTTP2Errors.createdStreamAfterGoaway()), type: .refusedStream), effect: nil)
 
         case .modifying:
             preconditionFailure("Must not be left in modifying state")
@@ -1042,7 +1042,10 @@ extension HTTP2ConnectionStateMachine {
             return .init(result: .connectionError(underlyingError: NIOHTTP2Errors.missingPreface(), type: .protocolError), effect: nil)
 
         case .fullyQuiesced:
-            return .init(result: .connectionError(underlyingError: NIOHTTP2Errors.ioOnClosedConnection(), type: .protocolError), effect: nil)
+            // We allow RST_STREAM frames to be sent because when a server receives a HEADERS frame in this state (say, a client sends
+            // a HEADERS frame before receiving the GOAWAY frame that the server has already sent), it throws a stream
+            // error which causes the emission of a RST_STREAM frame. This RST_STREAM frame needs to be passed on successfully.
+            return .init(result: .succeed, effect: nil)
 
         case .modifying:
             preconditionFailure("Must not be left in modifying state")
@@ -1169,15 +1172,12 @@ extension HTTP2ConnectionStateMachine {
         // RFC 7540 that says that receiving PINGs with ACK flags set when no PING ACKs are expected is forbidden. This is
         // very strange, but we allow it.
         switch self.state {
-        case .prefaceReceived, .active, .locallyQuiesced, .remotelyQuiesced, .bothQuiescing, .quiescingPrefaceReceived:
+        case .prefaceReceived, .active, .locallyQuiesced, .remotelyQuiesced, .bothQuiescing, .quiescingPrefaceReceived, .fullyQuiesced:
             return (.init(result: .succeed, effect: nil), ackFlagSet ? .nothing : .sendAck)
 
         case .idle, .prefaceSent, .quiescingPrefaceSent:
             // We're waiting for the remote preface.
             return (.init(result: .connectionError(underlyingError: NIOHTTP2Errors.missingPreface(), type: .protocolError), effect: nil), .nothing)
-
-        case .fullyQuiesced:
-            return (.init(result: .connectionError(underlyingError: NIOHTTP2Errors.ioOnClosedConnection(), type: .protocolError), effect: nil), .nothing)
 
         case .modifying:
             preconditionFailure("Must not be left in modifying state")
@@ -1190,15 +1190,12 @@ extension HTTP2ConnectionStateMachine {
         // RFC 7540 that says that sending PINGs with ACK flags set when no PING ACKs are expected is forbidden. This is
         // very strange, but we allow it.
         switch self.state {
-        case .prefaceSent, .active, .locallyQuiesced, .remotelyQuiesced, .bothQuiescing, .quiescingPrefaceSent:
+        case .prefaceSent, .active, .locallyQuiesced, .remotelyQuiesced, .bothQuiescing, .quiescingPrefaceSent, .fullyQuiesced:
             return .init(result: .succeed, effect: nil)
 
         case .idle, .prefaceReceived, .quiescingPrefaceReceived:
             // We're waiting for the local preface.
             return .init(result: .connectionError(underlyingError: NIOHTTP2Errors.missingPreface(), type: .protocolError), effect: nil)
-
-        case .fullyQuiesced:
-            return .init(result: .connectionError(underlyingError: NIOHTTP2Errors.ioOnClosedConnection(), type: .protocolError), effect: nil)
 
         case .modifying:
             preconditionFailure("Must not be left in modifying state")

@@ -328,4 +328,119 @@ class SimpleClientServerInlineStreamMultiplexerTests: XCTestCase {
         promise.succeed(())
         stream.writeAndFlush(headerPayload, promise: promise)
     }
+
+    func testOpenStreamBeforeReceivingAlreadySentGoAway() throws {
+        let serverHandler = InboundFramePayloadRecorder()
+        try self.basicHTTP2Connection() { channel in
+            return channel.pipeline.addHandler(serverHandler)
+        }
+
+        let clientHandler = InboundFramePayloadRecorder()
+        let childChannelPromise = self.clientChannel.eventLoop.makePromise(of: Channel.self)
+        let multiplexer = try self.clientChannel.pipeline.handler(type: NIOHTTP2Handler.self).wait().multiplexer.wait()
+        multiplexer.createStreamChannel(promise: childChannelPromise) { channel in
+            return channel.pipeline.addHandler(clientHandler)
+        }
+        self.clientChannel.embeddedEventLoop.run()
+        let childChannel = try childChannelPromise.futureResult.wait()
+
+        // Server sends GOAWAY frame.
+        let goAwayFrame = HTTP2Frame(streamID: .rootStream, payload: .goAway(lastStreamID: .maxID, errorCode: .noError, opaqueData: nil))
+        serverChannel.writeAndFlush(goAwayFrame, promise: nil)
+
+        // Client sends headers.
+        let headers = HPACKHeaders([(":path", "/"), (":method", "POST"), (":scheme", "https"), (":authority", "localhost")])
+        let reqFramePayload = HTTP2Frame.FramePayload.headers(.init(headers: headers))
+        childChannel.writeAndFlush(reqFramePayload, promise: nil)
+
+        self.interactInMemory(self.clientChannel, self.serverChannel, expectError: true) { error in
+            if let error = error as? NIOHTTP2Errors.StreamError {
+                XCTAssert(error.baseError is NIOHTTP2Errors.CreatedStreamAfterGoaway)
+            } else {
+                XCTFail("Expected error to be of type StreamError, got error of type \(type(of: error)).")
+            }
+        }
+
+        // Client receives GOAWAY and RST_STREAM frames.
+        try self.clientChannel.assertReceivedFrame().assertGoAwayFrame(lastStreamID: .maxID, errorCode: 0, opaqueData: nil)
+        clientHandler.receivedFrames.assertFramePayloadsMatch([HTTP2Frame.FramePayload.rstStream(.refusedStream)])
+
+        // No frames left.
+        self.clientChannel.assertNoFramesReceived()
+        self.serverChannel.assertNoFramesReceived()
+
+        // The stream closes with an error.
+        self.clientChannel.embeddedEventLoop.run()
+        XCTAssertThrowsError(try childChannel.closeFuture.wait())
+
+        XCTAssertNoThrow(try self.clientChannel.finish())
+        XCTAssertNoThrow(try self.serverChannel.finish())
+    }
+
+    func testSuccessfullyReceiveAndSendPingEvenWhenConnectionIsFullyQuiesced() throws {
+        let serverHandler = InboundFramePayloadRecorder()
+        try self.basicHTTP2Connection() { channel in
+            return channel.pipeline.addHandler(serverHandler)
+        }
+        // Fully quiesce the connection on the server.
+        let goAwayFrame = HTTP2Frame(streamID: .rootStream, payload: .goAway(lastStreamID: .rootStream, errorCode: .noError, opaqueData: nil))
+        serverChannel.writeAndFlush(goAwayFrame, promise: nil)
+
+        // Send PING frame to the server.
+        let pingFrame = HTTP2Frame(streamID: .rootStream, payload: .ping(HTTP2PingData(), ack: false))
+        clientChannel.writeAndFlush(pingFrame, promise: nil)
+
+        self.interactInMemory(self.clientChannel, self.serverChannel)
+
+        // The client receives the GOAWAY frame and fully quiesces the connection.
+        try self.clientChannel.assertReceivedFrame().assertGoAwayFrame(lastStreamID: .rootStream, errorCode: 0, opaqueData: nil)
+
+        // The server receives and responds to the PING.
+        try self.serverChannel.assertReceivedFrame().assertPingFrame(ack: false, opaqueData: HTTP2PingData())
+
+        // The client receives the PING response.
+        try self.clientChannel.assertReceivedFrame().assertPingFrame(ack: true, opaqueData: HTTP2PingData())
+
+        // No frames left.
+        self.clientChannel.assertNoFramesReceived()
+        self.serverChannel.assertNoFramesReceived()
+
+        XCTAssertNoThrow(try self.clientChannel.finish())
+        XCTAssertNoThrow(try self.serverChannel.finish())
+    }
+
+    func testChannelShouldQuiesceIsPropagated() throws {
+        // Setup the connection.
+        let receivedShouldQuiesceEvent = self.clientChannel.eventLoop.makePromise(of: Void.self)
+        try self.basicHTTP2Connection { stream in
+            stream.pipeline.addHandler(ShouldQuiesceEventWaiter(promise: receivedShouldQuiesceEvent))
+        }
+
+        let connectionReceivedShouldQuiesceEvent = self.clientChannel.eventLoop.makePromise(of: Void.self)
+        try self.serverChannel.pipeline.addHandler(ShouldQuiesceEventWaiter(promise: connectionReceivedShouldQuiesceEvent)).wait()
+
+        // Create the stream channel.
+        let multiplexer = try self.clientChannel.pipeline.handler(type: NIOHTTP2Handler.self).flatMap { $0.multiplexer }.wait()
+        let streamPromise = self.clientChannel.eventLoop.makePromise(of: Channel.self)
+        multiplexer.createStreamChannel(promise: streamPromise) {
+            $0.eventLoop.makeSucceededVoidFuture()
+        }
+        self.clientChannel.embeddedEventLoop.run()
+        let stream = try streamPromise.futureResult.wait()
+
+        // Initiate request to open the stream on the server.
+        let headers = HPACKHeaders([(":path", "/"), (":method", "POST"), (":scheme", "http")])
+        let frame: HTTP2Frame.FramePayload = .headers(.init(headers: headers))
+        stream.writeAndFlush(frame, promise: nil)
+        self.interactInMemory(self.clientChannel, self.serverChannel)
+
+        // Fire the event on the server pipeline, this should propagate to the stream channel and
+        // the connection channel.
+        self.serverChannel.pipeline.fireUserInboundEventTriggered(ChannelShouldQuiesceEvent())
+        XCTAssertNoThrow(try receivedShouldQuiesceEvent.futureResult.wait())
+        XCTAssertNoThrow(try connectionReceivedShouldQuiesceEvent.futureResult.wait())
+
+        XCTAssertNoThrow(try self.clientChannel.finish())
+        XCTAssertNoThrow(try self.serverChannel.finish())
+    }
 }
