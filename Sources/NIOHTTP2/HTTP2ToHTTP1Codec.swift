@@ -105,15 +105,26 @@ private struct BaseClientCodec {
         allocator: ByteBufferAllocator
     ) throws -> HTTP2Frame.FramePayload {
         switch data {
-        case .head(let head):
+        case .head(var head):
             precondition(self.outgoingHTTP1RequestHead == nil, "Only a single HTTP request allowed per HTTP2 stream")
+            var endStream = false
+            if head.headers.first(name: ":http2EndStream") == "true" {
+                // If request has no content we should send the end stream flag as part of the http2 headers frame
+                // Originally we sent .head and .end http parts here
+                // These were converted to http2 headers frame and an empty data frame with end stream flag
+                // Some servers don't like an empty data frame and fail on us
+                // We therefore add the send end bool as part of the headers to pass that info
+                endStream = true
+                head.headers.remove(name: ":http2EndStream")
+            }
             let h1Headers = try HTTPHeaders(requestHead: head, protocolString: self.protocolString)
             self.outgoingHTTP1RequestHead = head
             let headerContent = HTTP2Frame.FramePayload.Headers(
                 headers: HPACKHeaders(
                     httpHeaders: h1Headers,
                     normalizeHTTPHeaders: self.normalizeHTTPHeaders
-                )
+                ),
+                endStream: endStream
             )
             return .headers(headerContent)
         case .body(let body):

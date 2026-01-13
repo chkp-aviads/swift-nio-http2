@@ -545,6 +545,37 @@ final class HTTP2ToHTTP1CodecTests: XCTestCase {
     }
 
     @available(*, deprecated, message: "Deprecated so deprecated functionality can be tested without warnings")
+    func testRequestHeadWithEndStreamHeaderEndsStream() throws {
+        let streamID = HTTP2StreamID(1)
+        let writeRecorder = FrameWriteRecorder()
+        XCTAssertNoThrow(try self.channel.pipeline.addHandler(writeRecorder).wait())
+        XCTAssertNoThrow(
+            try self.channel.pipeline.syncOperations.addHandler(
+                HTTP2ToHTTP1ClientCodec(streamID: streamID, httpProtocol: .https)
+            )
+        )
+
+        var requestHead = HTTPRequestHead(version: .http1_1, method: .GET, uri: "/get")
+        requestHead.headers.add(name: "host", value: "example.org")
+        requestHead.headers.add(name: ":http2EndStream", value: "true")
+        requestHead.headers.add(name: "other", value: "header")
+        self.channel.writeAndFlush(HTTPClientRequestPart.head(requestHead), promise: nil)
+
+        let expectedRequestHeaders = HPACKHeaders([
+            (":path", "/get"), (":method", "GET"), (":scheme", "https"), (":authority", "example.org"),
+            ("other", "header"),
+        ])
+        XCTAssertEqual(writeRecorder.flushedWrites.count, 1)
+        writeRecorder.flushedWrites[0].assertHeadersFrame(
+            endStream: true,
+            streamID: 1,
+            headers: expectedRequestHeaders
+        )
+
+        XCTAssertNoThrow(try self.channel.finish())
+    }
+
+    @available(*, deprecated, message: "Deprecated so deprecated functionality can be tested without warnings")
     func testResponseWith100BlocksClientSide() throws {
         let streamID = HTTP2StreamID(1)
         XCTAssertNoThrow(
