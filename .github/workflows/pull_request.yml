@@ -10,7 +10,7 @@ on:
 jobs:
   soundness:
     name: Soundness
-    uses: swiftlang/github-workflows/.github/workflows/soundness.yml@main
+    uses: swiftlang/github-workflows/.github/workflows/soundness.yml@0.0.7
     with:
       license_header_check_project_name: "SwiftNIO"
 
@@ -35,7 +35,7 @@ jobs:
       h2spec-matrix: '${{ steps.generate-matrix.outputs.h2spec-matrix }}'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
       - id: generate-matrix
@@ -59,7 +59,7 @@ jobs:
       integration-tests-matrix: '${{ steps.generate-matrix.outputs.integration-tests-matrix }}'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
       - id: generate-matrix
@@ -75,6 +75,12 @@ jobs:
     with:
       name: "Examples"
       matrix_string: '${{ needs.construct-integration-tests-matrix.outputs.integration-tests-matrix }}'
+
+  benchmarks:
+    name: Benchmarks
+    uses: apple/swift-nio/.github/workflows/benchmarks.yml@main
+    with:
+      benchmark_package_path: "Benchmarks"
 
   macos-tests:
     name: macOS tests

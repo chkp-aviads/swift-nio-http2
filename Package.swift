@@ -32,7 +32,8 @@ let strictConcurrencySettings: [SwiftSetting] = {
 let package = Package(
     name: "swift-nio-http2",
     products: [
-        .library(name: "NIOHTTP2", targets: ["NIOHTTP2"])
+        .library(name: "NIOHTTP2", targets: ["NIOHTTP2"]),
+        .library(name: "NIOHPACK", targets: ["NIOHPACK"]),
     ],
     dependencies: [
         .package(url: "https://github.com/chkp-aviads/swift-nio.git", from: "2.84.0"),
