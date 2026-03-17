@@ -36,7 +36,7 @@ let package = Package(
         .library(name: "NIOHPACK", targets: ["NIOHPACK"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/chkp-aviads/swift-nio.git", from: "2.84.0"),
+        .package(url: "https://github.com/chkp-aviads/swift-nio.git", from: "2.96.1"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.0.2"),
     ],
     targets: [
