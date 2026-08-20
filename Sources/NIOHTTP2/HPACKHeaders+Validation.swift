@@ -273,22 +273,33 @@ extension HeaderFieldName {
     }
 
     func legalHeaderField(value: String) throws {
-        // RFC 7540 § 8.1.2.2 forbids all connection-specific header fields. A connection-specific header field technically
-        // is one that is listed in the Connection header, but could also be proxy-connection & transfer-encoding, even though
-        // those are not usually listed in the Connection header. For defensiveness sake, we forbid those too.
+        // RFC 9113 § 8.2.2 (which obsoletes RFC 7540 § 8.1.2.2) forbids all connection-specific header fields, and
+        // enumerates them explicitly: "Connection, Proxy-Connection, Keep-Alive, Transfer-Encoding, and Upgrade". A
+        // connection-specific header field technically is one that is listed in the Connection header, but the fields
+        // named above could also appear independently, so we forbid them all by name.
         //
         // There is one more wrinkle, which is that the client is allowed to send TE: trailers, and forbidden from sending TE
         // with anything else. We police that separately, as TE is only defined on requests, so we can avoid checking for it
         // on responses and trailers.
-        guard self.fieldType == .regularHeaderField else {
-            // Pseudo-headers are never connection-specific.
+        if self.fieldType == .pseudoHeaderField {
+            if !HPACKHeaders.isValidPseudoHeaderValue(value) {
+                throw NIOHTTP2Errors.invalidPseudoHeaderValue(name: ":\(self.baseName)", value: value)
+            }
             return
         }
 
         switch self.baseName {
-        case "connection", "transfer-encoding", "proxy-connection":
+        case "connection", "transfer-encoding", "proxy-connection", "keep-alive", "upgrade":
             throw NIOHTTP2Errors.forbiddenHeaderField(name: String(self.baseName), value: value)
         default:
+            // RFC 9113 § 8.2.1 forbids CR, LF, and NUL at any position in *any* field value,
+            // not just in pseudo-header values, and requires that a message carrying one be
+            // treated as malformed. HPACK field values are length-prefixed octet strings, so
+            // nothing in the decoder rejects these bytes for us: this is the only place on the
+            // inbound path where a regular field value is checked.
+            guard HPACKHeaders.isValidFieldValue(value) else {
+                throw NIOHTTP2Errors.invalidHTTP2HeaderFieldValue(name: String(self.baseName), value: value)
+            }
             return
         }
     }

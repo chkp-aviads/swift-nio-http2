@@ -794,10 +794,65 @@ extension HPACKHeaders {
         }
 
         if let headerValue = headerValue {
+            if !Self.isValidPseudoHeaderValue(headerValue) {
+                throw NIOHTTP2Errors.invalidPseudoHeaderValue(name: name, value: headerValue)
+            }
             return headerValue
         } else {
             throw NIOHTTP2Errors.missingPseudoHeader(name)
         }
+    }
+
+    static func isValidPseudoHeaderValue(_ value: String) -> Bool {
+        // Pseudo-header values must not contain CR, LF, or NUL bytes. These characters could
+        // enable HTTP/2-to-HTTP/1.1 request smuggling when the value is placed into an HTTP/1.1
+        // message (e.g. :path becomes the request-target).
+        //
+        // We reject the entire CTL range (0x00-0x1F), SP (0x20), and DEL (0x7F), rather than
+        // only CR/LF/NUL, for two reasons:
+        //
+        // 1. `:path` becomes the HTTP/1.1 request-target, which is serialized into the request
+        //    line `METHOD SP request-target SP HTTP-version CRLF`. A bare SP inside `:path`
+        //    therefore produces an ambiguous request line (e.g. `GET /a HTTP/1.1 HTTP/1.1`),
+        //    which HTTP/1.1 parsers may split differently depending on whether they take the
+        //    first or last SP-delimited token as the version. RFC 9112 § 3.2 requires any SP
+        //    in a request-target to be percent-encoded. Bare HTAB and the other CTLs are
+        //    likewise not permitted in a request-target.
+        //
+        // 2. No pseudo-header defined for HTTP/2 has a grammar admitting SP or a CTL:
+        //    `:method` and `:protocol` are tokens (RFC 9110 § 5.6.2), `:scheme` is a URI scheme
+        //    (RFC 3986 § 3.1), `:authority` is host[:port], `:path` is a request-target, and
+        //    `:status` is 3DIGIT. Rejecting these bytes is therefore conformant and does not
+        //    reject any well-formed value.
+        //
+        // Bytes >= 0x80 are deliberately still permitted: they are not delimiters in an
+        // HTTP/1.1 request line or header block, and rejecting them would break peers that
+        // send unencoded UTF-8 in `:path`.
+        !value.utf8.contains(where: { $0 <= 0x20 || $0 == 0x7F })
+    }
+
+    /// Whether this is a valid value for a regular (non-pseudo) HTTP/2 header field.
+    static func isValidFieldValue(_ value: String) -> Bool {
+        // RFC 9113 § 8.2.1 states:
+        //
+        // > A field value MUST NOT contain the zero value (ASCII NUL, 0x00), line feed
+        // > (ASCII LF, 0x0a), or carriage return (ASCII CR, 0x0d) at any position.
+        //
+        // and requires that a request or response containing such a value be treated as
+        // malformed. These bytes are smuggling-relevant for the same reason they are in a
+        // pseudo-header: when an HTTP/2-to-HTTP/1.1 translator serializes a field as
+        // `name: value CRLF`, an embedded CR or LF terminates the field early and injects
+        // attacker-controlled header lines — or an entire second request — into the
+        // downstream HTTP/1.1 message.
+        //
+        // Unlike pseudo-header values, SP, HTAB, and obs-text (0x80-0xFF) are permitted here,
+        // because RFC 9110 § 5.5 admits all of them inside a field value.
+        //
+        // Note: RFC 9113 § 8.2.1 additionally forbids a field value from *starting or ending*
+        // with SP or HTAB. That constraint is not enforced here, as it does not enable
+        // smuggling and rejecting it risks breaking peers that emit sloppy-but-harmless
+        // padding.
+        !value.utf8.contains(where: { $0 == 0x00 || $0 == 0x0A || $0 == 0x0D })
     }
 }
 
